@@ -7,7 +7,7 @@ from .engine import SimulationResult, simulate_day
 from .solver import SolverConfig, optimize_fleet
 from .diff import generate_unified_diff, apply_rewrites
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __all__ = [
     "CronExpression",
     "ScheduledJob",
