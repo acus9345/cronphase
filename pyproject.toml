@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cronphase"
-version = "0.2.0"
+version = "0.2.1"
 description = "Fleet-wide cron thundering-herd analyzer & deterministic phase-shift compiler"
 readme = "README.md"
 license = {text = "MIT"}

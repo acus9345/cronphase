@@ -6,6 +6,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-10
+
+- Fix release workflows: pin astral-sh/setup-uv to v10.3.3 (v0.2.0 was tagged but never reached PyPI).
+
 ## [0.2.0] - 2026-11-10
 
 ### Added
