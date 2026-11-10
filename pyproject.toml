@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=65.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cronphase"
+version = "0.2.0"
+description = "Fleet-wide cron thundering-herd analyzer & deterministic phase-shift compiler"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "cronphase contributors"}
+]
+keywords = ["cron", "crontab", "kubernetes", "devops", "sre", "scheduler", "thundering-herd"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Monitoring",
+    "Topic :: Utilities",
+]
+
+[project.scripts]
+cronphase = "cronphase.cli:main"

@@ -1,0 +1,29 @@
+# ============================================================================
+# PRODUCTION FLEET CRONTAB (16 JOBS) — Classic `:00` & Midnight Stampede
+# ============================================================================
+
+# Core Database Maintenance & Snapshots
+0 0 * * * pg_dump -Fc prod_main > /backups/prod.dump # @name=pg-nightly-dump @duration=12m @weight=9.0 @resource=db-primary @window=00:00-04:00
+0 0 * * * vacuumdb --all --analyze-in-stages # @name=pg-vacuum-analyze @duration=10m @weight=8.5 @resource=db-primary @window=00:00-05:00
+0 * * * * /usr/local/bin/wal-archive-verify.sh # @name=wal-archive-verify @duration=4m @weight=4.5 @resource=db-primary
+
+# High-Frequency Sync & Polling Loops
+*/5 * * * * python3 /srv/app/manage.py sync_stripe_webhooks # @name=stripe-webhook-sync @duration=2m @weight=4.0 @resource=db-primary
+*/5 * * * * python3 /srv/app/manage.py poll_partner_inventory # @name=partner-inventory-poll @duration=2m @weight=3.5 @resource=db-primary
+*/5 * * * * /srv/workers/flush-outbox-events.sh # @name=outbox-event-relay @duration=1m @weight=3.0 @resource=redis-cluster
+
+# 15-Minute Rollups & Cache Warming
+*/15 * * * * dbt run --select tag:quarter_hourly_marts # @name=dbt-15m-marts @duration=4m @weight=6.5 @resource=analytics-db
+*/15 * * * * python3 /srv/app/manage.py warm_search_cache # @name=redis-cache-warmer @duration=3m @weight=5.0 @resource=redis-cluster
+*/15 * * * * /usr/local/bin/refresh-materialized-views.sh # @name=matview-refresh @duration=3m @weight=6.0 @resource=db-primary
+
+# 30-Minute & Hourly Aggregations
+*/30 * * * * python3 /srv/app/manage.py compute_fraud_scores # @name=fraud-score-batch @duration=5m @weight=5.5 @resource=db-primary
+0 * * * * dbt run --select tag:hourly_finance_ledger # @name=hourly-ledger-rollup @duration=6m @weight=7.0 @resource=analytics-db
+0 * * * * /usr/local/bin/s3-access-log-shipper.sh # @name=s3-log-shipper @duration=4m @weight=3.5 @resource=storage-io
+0 * * * * python3 /srv/app/manage.py prune_expired_sessions # @name=session-table-gc @duration=3m @weight=5.0 @resource=db-primary
+
+# Nightly Billing, Reports & Security Audits
+0 0 * * * python3 /srv/app/manage.py settle_daily_invoices # @name=daily-invoice-settlement @duration=8m @weight=8.0 @resource=db-primary @lock
+0 0 * * * /usr/local/bin/export-gdpr-audit-trail.sh # @name=gdpr-audit-export @duration=7m @weight=5.0 @resource=storage-io @window=00:00-04:00
+0 0 * * * /usr/local/bin/trivy-image-compliance-scan.sh # @name=nightly-sec-scan @duration=9m @weight=4.5 @resource=ci-pool @window=00:00-05:00

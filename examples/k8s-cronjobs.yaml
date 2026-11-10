@@ -1,0 +1,27 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: orders-matview-refresh
+spec:
+  schedule: "*/15 * * * *" # @duration=4m @weight=6.5 @resource=db-primary
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: search-index-delta
+spec:
+  schedule: "*/15 * * * *" # @duration=3m @weight=5.0 @resource=db-primary
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: billing-usage-metering
+spec:
+  schedule: "0 * * * *" # @duration=5m @weight=7.0 @resource=db-primary
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: tenant-quota-reconciler
+spec:
+  schedule: "0 * * * *" # @duration=4m @weight=5.5 @resource=db-primary
