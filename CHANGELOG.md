@@ -6,8 +6,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-11-10
+## [0.2.0] - 2026-11-10
 
 ### Added
 
-- Initial release.
+- Initial public release: fleet-wide cron load simulation, harmonic resonance
+  spectrum, and the constrained phase-shift compiler (`anneal`, `fnv-hash`,
+  `prime-splay`) with unified diff output and `--max-crest-factor` CI gate.
+- Parses UNIX crontab, Kubernetes CronJob YAML and GitHub Actions schedules.
