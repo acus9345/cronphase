@@ -4,6 +4,7 @@ Unified Diff & Rewritten Manifest Generator for Crontab, Kubernetes YAML, and Gi
 
 from __future__ import annotations
 import difflib
+import re
 from typing import Dict, List
 from .parser import ScheduledJob
 from .solver import JobRewrite
@@ -22,8 +23,9 @@ def apply_rewrites(original_text: str, jobs: List[ScheduledJob], rewrites: List[
         rw = line_to_rewrite.get(idx)
         if rw is not None:
             # Replace only inside the schedule portion before any trailing comment
-            comment_idx = line.find(" #")
-            if comment_idx != -1:
+            comment_match = re.search(r"\s#", line)
+            if comment_match is not None:
+                comment_idx = comment_match.start()
                 head = line[:comment_idx].replace(rw.old_expr, rw.new_expr, 1)
                 replaced = head + line[comment_idx:]
             else:

@@ -84,9 +84,36 @@ def _allowed_hours_for_job(job: ScheduledJob, cfg: SolverConfig) -> List[int]:
     if not cfg.preserve_hours_for_daily and len(job.cron.hours) == 1 and len(job.cron.minutes) == 1:
         orig_h = job.cron.hours[0]
         w_start, w_end = cfg.daily_window_hours
-        if w_start <= orig_h <= w_end:
-            return list(range(w_start, w_end + 1))
+        if w_start <= w_end:
+            if w_start <= orig_h <= w_end:
+                return list(range(w_start, w_end + 1))
+        elif orig_h >= w_start or orig_h <= w_end:
+            return list(range(w_start, 24)) + list(range(0, w_end + 1))
     return list(job.cron.hours)
+
+
+def _hour_fields_for_job(job: ScheduledJob, period: int, cfg: SolverConfig) -> List[str]:
+    """Returns valid cron hour-field strings respecting @window and daily window bounds."""
+    allowed_hours = _allowed_hours_for_job(job, cfg)
+    h_period = _detect_hour_period(job.cron.hours)
+
+    if period == 60 and len(job.cron.hours) == 1 and allowed_hours:
+        return [str(h) for h in allowed_hours]
+
+    if period == 60 and h_period is not None:
+        has_explicit_window = job.window_start_hour is not None and job.window_end_hour is not None
+        allowed_set = set(allowed_hours)
+        hour_fields: List[str] = []
+        count = 24 // h_period
+        for hp in range(0, h_period):
+            if has_explicit_window:
+                lattice_hours = {(hp + i * h_period) % 24 for i in range(count)}
+                if not lattice_hours.issubset(allowed_set):
+                    continue
+            hour_fields.append(_build_shifted_hour_field(h_period, hp))
+        return hour_fields if hour_fields else [job.cron.hour_field]
+
+    return [job.cron.hour_field]
 
 
 def _fnv1a_32(text: str) -> int:
@@ -127,9 +154,9 @@ def optimize_fleet(
 
     rewrites: List[JobRewrite] = []
     for orig, new_job in zip(jobs, optimized):
-        old_s = orig.cron.format_canonical()
-        new_s = new_job.cron.format_canonical()
-        if old_s != new_s:
+        if (orig.cron.minutes, orig.cron.hours) != (new_job.cron.minutes, new_job.cron.hours):
+            old_s = orig.cron.format_canonical()
+            new_s = new_job.cron.format_canonical()
             old_first = orig.cron.firing_minutes_in_day()[0] if orig.cron.firing_minutes_in_day() else 0
             new_first = new_job.cron.firing_minutes_in_day()[0] if new_job.cron.firing_minutes_in_day() else 0
             delta = new_first - old_first
@@ -153,25 +180,13 @@ def _candidate_expressions(job: ScheduledJob, cfg: SolverConfig) -> List[CronExp
     if period is None or period <= 1:
         return [job.cron]
 
-    allowed_hours = _allowed_hours_for_job(job, cfg)
-    h_period = _detect_hour_period(job.cron.hours)
+    hour_fields = _hour_fields_for_job(job, period, cfg)
     candidates: List[CronExpression] = []
 
-    if len(job.cron.hours) == 1 and len(allowed_hours) > 1 and period == 60:
-        for h in allowed_hours:
-            for m_phase in range(0, 60):
-                expr_str = f"{m_phase} {h} {job.cron.dom_field} {job.cron.month_field} {job.cron.dow_field}"
-                candidates.append(CronExpression.parse(expr_str))
-    elif h_period is not None and period == 60:
-        for hp in range(0, h_period):
-            h_field = _build_shifted_hour_field(h_period, hp)
-            for m_phase in range(0, 60):
-                expr_str = f"{m_phase} {h_field} {job.cron.dom_field} {job.cron.month_field} {job.cron.dow_field}"
-                candidates.append(CronExpression.parse(expr_str))
-    else:
+    for h_field in hour_fields:
         for m_phase in range(0, period):
             m_field = _build_shifted_minute_field(period, m_phase)
-            expr_str = f"{m_field} {job.cron.hour_field} {job.cron.dom_field} {job.cron.month_field} {job.cron.dow_field}"
+            expr_str = f"{m_field} {h_field} {job.cron.dom_field} {job.cron.month_field} {job.cron.dow_field}"
             candidates.append(CronExpression.parse(expr_str))
 
     return candidates
@@ -185,15 +200,10 @@ def _apply_hash_splay(jobs: List[ScheduledJob], cfg: SolverConfig) -> None:
         if not period or period <= 1:
             continue
         h_val = _fnv1a_32(f"{job.name}:{job.command}")
-        allowed_hours = _allowed_hours_for_job(job, cfg)
-        h_period = _detect_hour_period(job.cron.hours)
         m_phase = h_val % period
         m_field = _build_shifted_minute_field(period, m_phase)
-        h_field = job.cron.hour_field
-        if len(job.cron.hours) == 1 and len(allowed_hours) > 1 and period == 60:
-            h_field = str(allowed_hours[(h_val >> 8) % len(allowed_hours)])
-        elif h_period is not None and period == 60:
-            h_field = _build_shifted_hour_field(h_period, (h_val >> 8) % h_period)
+        hour_fields = _hour_fields_for_job(job, period, cfg)
+        h_field = hour_fields[(h_val >> 8) % len(hour_fields)]
         job.cron = CronExpression.parse(
             f"{m_field} {h_field} {job.cron.dom_field} {job.cron.month_field} {job.cron.dow_field}"
         )
@@ -208,15 +218,10 @@ def _apply_prime_splay(jobs: List[ScheduledJob], cfg: SolverConfig) -> None:
         period = _detect_minute_period(job.cron.minutes)
         if not period or period <= 1:
             continue
-        allowed_hours = _allowed_hours_for_job(job, cfg)
-        h_period = _detect_hour_period(job.cron.hours)
         m_phase = ((idx + 1) * prime_stride) % period
         m_field = _build_shifted_minute_field(period, m_phase)
-        h_field = job.cron.hour_field
-        if len(job.cron.hours) == 1 and len(allowed_hours) > 1 and period == 60:
-            h_field = str(allowed_hours[((idx + 1) * prime_hour_stride) % len(allowed_hours)])
-        elif h_period is not None and period == 60:
-            h_field = _build_shifted_hour_field(h_period, ((idx + 1) * prime_hour_stride) % h_period)
+        hour_fields = _hour_fields_for_job(job, period, cfg)
+        h_field = hour_fields[((idx + 1) * prime_hour_stride) % len(hour_fields)]
         job.cron = CronExpression.parse(
             f"{m_field} {h_field} {job.cron.dom_field} {job.cron.month_field} {job.cron.dow_field}"
         )
@@ -272,8 +277,15 @@ def _apply_minimax_solver(
 
             seed_offset = ((idx + 1) * 13) % len(candidates)
             rotated = candidates[seed_offset:] + candidates[:seed_offset]
+            current_sig = (job.cron.minutes, job.cron.hours)
+            has_current = any((c.minutes, c.hours) == current_sig for c in candidates)
+            eval_order = (
+                [job.cron] + [c for c in rotated if (c.minutes, c.hours) != current_sig]
+                if has_current
+                else rotated
+            )
 
-            for cand in rotated:
+            for cand in eval_order:
                 fires = cand.firing_minutes_in_day()
                 cand_peak_load = 0.0
                 cand_res_peak = 0.0
@@ -311,7 +323,7 @@ def _apply_minimax_solver(
                     best_score = score
                     best_cron = cand
 
-            if best_cron.format_canonical() != job.cron.format_canonical():
+            if (best_cron.minutes, best_cron.hours) != current_sig:
                 improved_in_pass = True
             job.cron = best_cron
             add_job_to_grid(job, +1)

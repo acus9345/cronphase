@@ -87,12 +87,13 @@ class CronExpression:
     ) -> bool:
         if month not in self.months:
             return False
+        dow = 0 if day_of_week == 7 else day_of_week
         # Standard Vixie cron semantics: if both DOM and DOW are restricted (not '*'),
         # match if EITHER matches; otherwise both must match.
         if self.dom_restricted and self.dow_restricted:
-            day_match = (day_of_month in self.doms) or (day_of_week in self.dows)
+            day_match = (day_of_month in self.doms) or (dow in self.dows)
         else:
-            day_match = (day_of_month in self.doms) and (day_of_week in self.dows)
+            day_match = (day_of_month in self.doms) and (dow in self.dows)
         if not day_match:
             return False
 
@@ -229,6 +230,45 @@ def parse_manifest(content: str) -> List[ScheduledJob]:
     return _parse_crontab(lines)
 
 
+def _parse_window_hours(window_str: str) -> Tuple[Optional[int], Optional[int]]:
+    wm = re.match(r"(\d{1,2})(?::\d{2})?-(\d{1,2})(?::\d{2})?", window_str)
+    if not wm:
+        return None, None
+    start_h = int(wm.group(1))
+    end_h = int(wm.group(2))
+    if end_h == 24:
+        win_start = 0 if start_h == 24 else start_h % 24
+        win_end = 23
+    else:
+        win_start = start_h % 24
+        win_end = end_h % 24
+    return win_start, win_end
+
+
+def _apply_job_metadata(
+    meta: Dict[str, str],
+    dur: int,
+    weight: float,
+    resource: str,
+) -> Tuple[int, float, str, Optional[int], Optional[int]]:
+    if "duration" in meta:
+        dur_val = re.sub(r"[^0-9]", "", meta["duration"])
+        if dur_val:
+            dur = max(1, min(180, int(dur_val)))
+    if "weight" in meta:
+        try:
+            weight = max(0.5, min(25.0, float(meta["weight"])))
+        except ValueError:
+            pass
+    if "resource" in meta:
+        resource = meta["resource"]
+
+    win_start, win_end = None, None
+    if "window" in meta:
+        win_start, win_end = _parse_window_hours(meta["window"])
+    return dur, weight, resource, win_start, win_end
+
+
 def _parse_crontab(lines: List[str]) -> List[ScheduledJob]:
     jobs: List[ScheduledJob] = []
     pending_comment = ""
@@ -241,16 +281,19 @@ def _parse_crontab(lines: List[str]) -> List[ScheduledJob]:
             pending_comment += " " + stripped[1:].strip()
             continue
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\s*=", stripped):
+            pending_comment = ""
             continue
 
         m = _CRONTAB_LINE_RE.match(stripped)
         if not m:
+            pending_comment = ""
             continue
         expr_str = m.group(1) or m.group(2)
         rest = m.group(3).strip()
 
-        if " #" in rest:
-            cmd_part, inline_comment = rest.split(" #", 1)
+        comment_split = re.split(r"\s+#", rest, maxsplit=1)
+        if len(comment_split) == 2:
+            cmd_part, inline_comment = comment_split
         else:
             cmd_part, inline_comment = rest, ""
 
@@ -272,24 +315,7 @@ def _parse_crontab(lines: List[str]) -> List[ScheduledJob]:
         job_id = f"job-{len(jobs) + 1:02d}"
         name = meta.get("name") or _derive_job_name(cmd_clean, full_comment, len(jobs) + 1)
         dur, weight, resource = infer_job_profile(name, cmd_clean)
-
-        if "duration" in meta:
-            dur_val = re.sub(r"[^0-9]", "", meta["duration"])
-            if dur_val:
-                dur = max(1, min(180, int(dur_val)))
-        if "weight" in meta:
-            try:
-                weight = max(0.5, min(25.0, float(meta["weight"])))
-            except ValueError:
-                pass
-        if "resource" in meta:
-            resource = meta["resource"]
-
-        win_start, win_end = None, None
-        if "window" in meta:
-            wm = re.match(r"(\d{1,2})(?::\d{2})?-(\d{1,2})(?::\d{2})?", meta["window"])
-            if wm:
-                win_start, win_end = int(wm.group(1)) % 24, int(wm.group(2)) % 24
+        dur, weight, resource, win_start, win_end = _apply_job_metadata(meta, dur, weight, resource)
 
         jobs.append(
             ScheduledJob(
@@ -353,23 +379,7 @@ def _parse_yaml_schedules(lines: List[str]) -> List[ScheduledJob]:
             job_idx = len(jobs) + 1
             j_name = meta.get("name") or current_name or f"{fmt}-job-{job_idx:02d}"
             dur, weight, resource = infer_job_profile(j_name, current_cmd or full_meta_text)
-            if "duration" in meta:
-                d_str = re.sub(r"[^0-9]", "", meta["duration"])
-                if d_str:
-                    dur = max(1, int(d_str))
-            if "weight" in meta:
-                try:
-                    weight = float(meta["weight"])
-                except ValueError:
-                    pass
-            if "resource" in meta:
-                resource = meta["resource"]
-
-            win_start, win_end = None, None
-            if "window" in meta:
-                wm = re.match(r"(\d{1,2})(?::\d{2})?-(\d{1,2})(?::\d{2})?", meta["window"])
-                if wm:
-                    win_start, win_end = int(wm.group(1)) % 24, int(wm.group(2)) % 24
+            dur, weight, resource, win_start, win_end = _apply_job_metadata(meta, dur, weight, resource)
 
             jobs.append(
                 ScheduledJob(

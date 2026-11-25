@@ -7,6 +7,7 @@ Usage:
 from __future__ import annotations
 import argparse
 import json
+import os
 import sys
 from typing import List, Optional
 from .parser import parse_manifest
@@ -54,9 +55,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         raw = sys.stdin.read()
         fname = "stdin.crontab"
     else:
-        with open(args.manifest, "r", encoding="utf-8") as f:
-            raw = f.read()
-        fname = args.manifest.rsplit("/", 1)[-1]
+        try:
+            with open(args.manifest, "r", encoding="utf-8") as f:
+                raw = f.read()
+        except OSError as exc:
+            print(f"cronphase: cannot read '{args.manifest}': {exc.strerror or exc}", file=sys.stderr)
+            return 1
+        fname = os.path.basename(args.manifest) or args.manifest
 
     jobs = parse_manifest(raw)
     if not jobs:

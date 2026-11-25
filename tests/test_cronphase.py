@@ -1,3 +1,6 @@
+import contextlib
+import io
+import os
 import unittest
 from cronphase.parser import CronExpression, parse_manifest
 from cronphase.engine import simulate_day
@@ -100,6 +103,97 @@ spec:
         for strat in ("fnv-hash", "prime-splay", "anneal"):
             _, _, b_sim, a_sim = optimize_fleet(jobs, SolverConfig(strategy=strat))
             self.assertLessEqual(a_sim.peak_load, b_sim.peak_load)
+
+    def test_dow_7_matches_sunday(self):
+        c = CronExpression.parse("0 0 * * sun")
+        self.assertTrue(c.matches_minute_of_day(0, day_of_week=0))
+        self.assertTrue(c.matches_minute_of_day(0, day_of_week=7))
+        self.assertFalse(c.matches_minute_of_day(0, day_of_week=1))
+
+    def test_single_hour_and_multi_hour_window_constraints(self):
+        # Single-hour window must move daily job into hour 2 across all strategies
+        for strat in ("anneal", "fnv-hash", "prime-splay"):
+            jobs = parse_manifest("0 0 * * * /bin/a.sh # @window=02-02\n")
+            opt, _, _, _ = optimize_fleet(jobs, SolverConfig(strategy=strat))
+            self.assertEqual(opt[0].cron.hours, (2,))
+
+        # Multi-hour */12 job with @window=02-16 must stay within hours 2..16
+        for strat in ("anneal", "fnv-hash", "prime-splay"):
+            jobs = parse_manifest(
+                "0 */12 * * * /bin/a.sh # @name=a @window=02-16\n"
+                "0 */12 * * * /bin/b.sh # @name=b @window=02-16\n"
+            )
+            opt, _, _, _ = optimize_fleet(jobs, SolverConfig(strategy=strat))
+            for j in opt:
+                self.assertTrue(all(2 <= h <= 16 for h in j.cron.hours), (strat, j.cron.hours))
+
+        # Multi-hour */4 job cannot fit in 01-05, so hour field must not be shifted outside
+        jobs = parse_manifest("0 */4 * * * /bin/a.sh # @window=01-05\n")
+        opt, _, _, _ = optimize_fleet(jobs, SolverConfig(strategy="anneal"))
+        self.assertEqual(opt[0].cron.hours, (0, 4, 8, 12, 16, 20))
+
+    def test_window_24_hour_end_parsing(self):
+        jobs = parse_manifest(
+            "0 0 * * * /bin/a.sh # @window=00:00-24:00\n"
+            "0 18 * * * /bin/b.sh # @window=18:00-24:00\n"
+        )
+        self.assertEqual((jobs[0].window_start_hour, jobs[0].window_end_hour), (0, 23))
+        self.assertEqual((jobs[1].window_start_hour, jobs[1].window_end_hour), (18, 23))
+
+    def test_no_noop_format_only_rewrites(self):
+        jobs = parse_manifest("01 03 * * * /bin/a.sh\n")
+        opt, rw, _, _ = optimize_fleet(jobs, SolverConfig(strategy="anneal", preserve_hours_for_daily=True))
+        self.assertEqual(rw, [])
+        self.assertEqual(opt[0].cron.raw, "01 03 * * *")
+
+    def test_crontab_comment_isolation_and_tab_comments(self):
+        raw = (
+            "# Set PATH for jobs\n"
+            "PATH=/usr/local/bin:/usr/bin\n"
+            "0 0 * * * /bin/actual.sh\t# @name=actual-job @duration=5m\n"
+        )
+        jobs = parse_manifest(raw)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].name, "actual-job")
+        self.assertEqual(jobs[0].duration_min, 5)
+        opt, rw, _, _ = optimize_fleet(jobs)
+        if rw:
+            rewritten = apply_rewrites(raw, jobs, rw)
+            self.assertIn("\t# @name=actual-job @duration=5m", rewritten)
+
+    def test_yaml_metadata_clamping_and_github_actions(self):
+        gh_yaml = """
+name: Nightly Audit
+on:
+  schedule:
+    - cron: '0 * * * *' # @duration=999m @weight=0.01
+    - cron: '0 * * * *' # @duration=4m @weight=5.0
+"""
+        jobs = parse_manifest(gh_yaml)
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual(jobs[0].source_format, "github")
+        self.assertEqual(jobs[0].name, "Nightly Audit")
+        self.assertEqual(jobs[0].duration_min, 180)
+        self.assertEqual(jobs[0].weight, 0.5)
+
+    def test_cli_path_diff_header_and_error_handling(self):
+        buf = io.StringIO()
+        manifest_path = os.path.join("examples", "prod.crontab")
+        with contextlib.redirect_stdout(buf):
+            rc = cli_main([manifest_path, "--optimize", "--diff"])
+        self.assertEqual(rc, 0)
+        self.assertIn("--- a/prod.crontab", buf.getvalue())
+        self.assertIn("+++ b/prod.crontab", buf.getvalue())
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc_missing = cli_main(["does-not-exist-cronphase.crontab"])
+        self.assertEqual(rc_missing, 1)
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc_gate = cli_main(["examples/prod.crontab", "--max-crest-factor", "2.5"])
+        self.assertEqual(rc_gate, 2)
 
 
 if __name__ == "__main__":
